@@ -1,30 +1,95 @@
-# "Permanent Install" (Autoload) of Temporary Firefox Addons
+# Autoload Temporary Firefox Addons (ESM-Update for Firefox 136+)
 
-One of the problems that really bothers me as an extension developer is that Firefox took away the ability to run personal addons from a local file directory without having to package it into a xpi (at least with Developer Edition and ESR it is possible to run your personal xpi without having to sign it, thank goodness).  This is a [bad decision](https://blog.mozilla.org/addons/2015/12/23/loading-temporary-add-ons/) which Mike Kaply also disagreed with: 
-> "This fix doesn't help the thousands of add-ons that are not restartless.  Please just do a developer mode like Chrome.  Have a giant popup that says "You are in developer mode" and be done with it. Please."
+> Fork of [tsaost/autoload-temporary-addon](https://github.com/tsaost/autoload-temporary-addon) — updated for modern Firefox versions.
 
-This is a standard feature in every major browser I tried (just turn on "Developer Mode" in Chrome), so that even casual users can dabble in extension.  But for whatever reason (security? to prevent clueless users from being duped into running addons that are unziped into a local directory?) Mozilla do not allow it. .
+## Problem
 
-Since Mozilla [will not provide this functionality](https://bugzilla.mozilla.org/show_bug.cgi?id=1309288#c25), I need to find a way to do it.  I started to google for various options to go about it. Initially I thought about hacking omni.ja directly, but Mike Kaply convince me that it is [better to do it via AutoConfig](https://mike.kaply.com/2013/05/06/dont-unpack-and-repack-omni-jar/).
+Firefox does not allow permanently installing unsigned, self-developed extensions. The only way is to load them as "temporary add-ons" via `about:debugging`, but they are lost on every restart.
 
-I found another [article by Mike Kaply](https://mike.kaply.com/2012/03/22/customizing-firefox-advanced-autoconfig-files) and found a very useful reply from Mike when asked about AddonManager.jsm . His comment about Components.utils.import("resource://gre/modules/AddonManager.jsm") provided exactly the information I needed.  After studying his CCK2 code and a few hours of trial and error I found the solution.  What is even better is that this solution seems to work even on the current release version of Firefox (tested on Windows 10 running Firefox version 104.0.2 32-bit)
+The [original project](https://github.com/tsaost/autoload-temporary-addon) solved this using Firefox AutoConfig (`userChrome.js`), but stopped working with **Firefox 136+** because Mozilla removed the legacy JSM module system (`Services.jsm`, `AddonManager.jsm`, `FileUtils.jsm`).
 
-The procedure involves a few steps, but it needs to be done only once.
+## What changed
 
-First you need to enable [AutoConfig aka userchrome.js](https://www.userchrome.org/what-is-userchrome-js.html) by copying the file [config-prefs.js](https://github.com/tsaost/autoload-temporary-addon/blob/main/config-prefs.js) to [Your Firefox install directory]/defaults/pref
+This fork replaces the old JSM imports with the new ESM equivalents:
 
-Note: For best security, on Windows it is best to leave your Firefox install in "c:\Program Files" so that your config-prefs.js and userChrome.js can only be modified when you are in root/admin mode.
+```js
+// Old (broken in Firefox 136+):
+Components.utils.import("resource://gre/modules/Services.jsm");
+Components.utils.import("resource://gre/modules/AddonManager.jsm");
+Components.utils.import("resource://gre/modules/FileUtils.jsm");
 
-Then you need to edit the file [userChrome.js](https://github.com/tsaost/autoload-temporary-addon/blob/main/userChrome.js) and modify the function installUnpackedExtensions() to reflect the locations of your own addons.
+// New (works in Firefox 136+):
+var Services = globalThis.Services;
+var { AddonManager } = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
+var { FileUtils } = ChromeUtils.importESModule("resource://gre/modules/FileUtils.sys.mjs");
+```
 
-The modified userChrome.js then must be copied to your Firefox installation directory.  For example on Windows this is usually "c:\Program Files (x86)\Mozilla Firefox" for the 32-bit version of Firefox.  You can rename the file, but remember to modify the corresponding line pref("general.config.filename", "userChrome.js") in defaults/pref/config-prefs.js
+Tested on **Firefox 148** (Linux).
 
-Now your addons from your local directories will be loaded automatically whenever Firefox starts.  After editing your code remember to reload it from [about:debuggin](about:debugging#/runtime/this-firefox). You can also get there via the menu by selecting "More Tools", then "Remote Debugging", and click on "This Firefox" on the left side (but the quickest way is to bookmark it and then add a bookmark keyword such as "dbg" for quick access.)
+## Installation
 
-Please note that this is an automated installation of the extension every time Firefox starts, so it is not quite the same as a "permanent install".  That is, this procedure has exactly the same effect as clicking on "Load Temporary Addon..." from the [about:debugging](about:debugging#/runtime/this-firefox) page, just that the process is now automated via userChrome.js.  This means that if you have code that does something after the installation of the extension such as `browser.runtime.onInstalled.addListener(details => { if (details.reason == "install") { ...do something after install... });` then this code will be called every time Firefox is launched. 
+### Step 1: Copy `config-prefs.js` to Firefox defaults
 
-Because the extension is re-installed every time, you must make sure you have [browser_specific_settings](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/browser_specific_settings) such as `"browser_specific_settings": {"gecko": { "id": "you.extension.your.name@gmail.com" }}` in your manifest.jason or changes to your options and local storage will be lost when you restart Firefox.
+```bash
+# Linux:
+sudo cp config-prefs.js /usr/lib/firefox/defaults/pref/
 
-I hope that Mozilla will not cripple AutoConfig to prevent this workaround for the lack of a Developer Mode like most other browsers.  Seems to me that AutoConfig does not represent a new security loophole because if an attacker has access to the Firefox install directory to install or modify config-prefs.js and userChrome.js then every file in the directory, including firefox.exe and omni.ja are at risk already.
+# macOS:
+sudo cp config-prefs.js /Applications/Firefox.app/Contents/Resources/defaults/pref/
 
-The auto-generated github page is [here](https://tsaost.github.io/autoload-temporary-addon/).
+# Windows (as admin):
+copy config-prefs.js "C:\Program Files\Mozilla Firefox\defaults\pref\"
+```
+
+### Step 2: Edit `userChrome.js`
+
+Open `userChrome.js` and add your extension paths to `installUnpackedExtensions()`:
+
+```js
+function installUnpackedExtensions() {
+    installExtension("/home/user/my-extension");
+    installExtension("/home/user/another-extension");
+}
+```
+
+### Step 3: Copy `userChrome.js` to Firefox install directory
+
+```bash
+# Linux:
+sudo cp userChrome.js /usr/lib/firefox/
+
+# macOS:
+sudo cp userChrome.js /Applications/Firefox.app/Contents/Resources/
+
+# Windows (as admin):
+copy userChrome.js "C:\Program Files\Mozilla Firefox\"
+```
+
+### Step 4: Restart Firefox
+
+Your extensions will be automatically loaded at startup.
+
+## Important
+
+- Your extensions **must** have a `browser_specific_settings` entry in `manifest.json` with a unique `gecko.id`, otherwise local storage will be lost on restart:
+  ```json
+  "browser_specific_settings": {
+    "gecko": { "id": "your-extension@example.com" }
+  }
+  ```
+- This is functionally identical to clicking "Load Temporary Add-on" in `about:debugging` — it just happens automatically.
+- The extensions require files in the Firefox install directory (`/usr/lib/firefox/`), which needs admin/root access. This is not a new security concern — if an attacker has write access to that directory, they can already modify `firefox` itself.
+
+## Why is this needed?
+
+Mozilla does not provide a "Developer Mode" like Chrome. The only alternatives are:
+- Sign extensions through Mozilla (requires account + internet)
+- Use Firefox ESR or Developer Edition (can disable signature checks)
+- Load via `about:debugging` every time (lost on restart)
+
+See [Bug 1309288](https://bugzilla.mozilla.org/show_bug.cgi?id=1309288) for the long-standing feature request.
+
+## Credits
+
+- Original project by [tsaost](https://github.com/tsaost/autoload-temporary-addon)
+- ESM update by [Mantik IT](https://mantik-it.de)
